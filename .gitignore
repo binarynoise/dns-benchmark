@@ -1,0 +1,8 @@
+/build/
+/.gradle/
+/.idea/*
+!/.idea/artifacts
+!/.idea/libraries
+!/.idea/kotlinc.xml
+!/.idea/modules.xml
+!/.idea/vcs.xml
