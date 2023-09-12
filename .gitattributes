@@ -1,2 +1,2 @@
 *               text=auto
-MANIFEST        text eol=crlf
+*.bat           text eol=crlf
