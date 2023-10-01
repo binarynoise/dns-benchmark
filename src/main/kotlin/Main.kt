@@ -1,4 +1,5 @@
 import java.io.File
+import java.lang.management.ManagementFactory
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import kotlin.random.Random
@@ -9,6 +10,8 @@ val runtime: Runtime = Runtime.getRuntime()
 fun main() {
     println("dns-benchmark")
     val timestamp = LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+    
+    val debug = ManagementFactory.getRuntimeMXBean().inputArguments.any { it.contains("jdwp") }
     
     val config = Config.load()
     
@@ -51,33 +54,39 @@ fun main() {
                 val out = process.inputStream.bufferedReader().readLines()
                 val err = process.errorStream.bufferedReader().readLines()
                 
-                check(exitCode == 0) {
-                    buildString {
-                        appendLine("Command failed: ${run.command.format(domain, server)}")
-                        appendLine("Exit code: $exitCode")
-                        appendOutAndErr(out, err)
+                try {
+                    check(exitCode == 0) {
+                        buildString {
+                            appendLine("Command failed: ${run.command.format(domain, server)}")
+                            appendLine("Exit code: $exitCode")
+                            appendOutAndErr(out, err)
+                        }
                     }
-                }
-                
-                val line = out.findLast { regex.matches(it) }
-                check(line != null) {
-                    buildString {
-                        appendLine("Command failed: ${run.command.format(domain, server)}")
-                        appendLine("time not found")
-                        appendOutAndErr(out, err)
+                    
+                    val line = out.findLast { regex.matches(it) }
+                    check(line != null) {
+                        buildString {
+                            appendLine("Command failed: ${run.command.format(domain, server)}")
+                            appendLine("time not found")
+                            appendOutAndErr(out, err)
+                        }
                     }
-                }
-                val match = regex.find(line)
-                check(match != null) {
-                    buildString {
-                        appendLine("Command failed: ${run.command.format(domain, server)}")
-                        appendLine("time not found")
-                        appendOutAndErr(out, err)
+                    val match = regex.find(line)
+                    check(match != null) {
+                        buildString {
+                            appendLine("Command failed: ${run.command.format(domain, server)}")
+                            appendLine("time not found")
+                            appendOutAndErr(out, err)
+                        }
                     }
+                    
+                    val time = match.groupValues[1].toInt()
+                    result.add(time)
+                } catch (e: IllegalStateException) {
+                    if (debug) throw e
+                    val time = 10000
+                    result.add(time)
                 }
-                
-                val time = match.groupValues[1].toInt()
-                result.add(time)
             }
             Thread.sleep(config.delay.inWholeMilliseconds)
         }
