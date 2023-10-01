@@ -1,52 +1,105 @@
+import java.io.File
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
 import kotlin.random.Random
+
+val runtime: Runtime = Runtime.getRuntime()
 
 @Suppress("UNREACHABLE_CODE", "KotlinRedundantDiagnosticSuppress")
 fun main() {
     println("dns-benchmark")
+    val timestamp = LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
     
     val config = Config.load()
-    print("benchmarking ${config.servers.size} servers")
     
-    val results = config.servers.associateWith { mutableListOf<Int>() }
-    val prefix = Random.nextInt(from = 0, until = Int.MAX_VALUE)
-    val regex = Regex(config.timeRegex)
-    val runtime = Runtime.getRuntime()
-    
-    repeat(config.repeat) {
-        print(".")
-        val domain = config.domain.format(prefix, it)
-        
-        for ((server, result) in results) {
-            val process = runtime.exec(config.command.format(domain, server))
-            val exitCode = process.waitFor()
-            
-            if (exitCode != 0) {
-                result.add(1000)
-                continue
+    val domains = buildList {
+        when {
+            config.domain.fixed != null -> {
+                repeat(config.domain.repeat) { add(config.domain.fixed) }
             }
-            
-            val out = process.inputStream.bufferedReader().readLines()
-            val err = process.errorStream.bufferedReader().readLines()
-            check(err.isEmpty())
-            
-            val line = out.findLast { regex.matches(it) }
-            check(line != null)
-            val match = regex.find(line)
-            check(match != null)
-            
-            val time = match.groupValues[1].toInt()
-            result.add(time)
+            config.domain.formatted != null -> {
+                val prefix = Random.nextInt(from = 0, until = Int.MAX_VALUE)
+                repeat(config.domain.repeat) { add(config.domain.formatted.format(prefix, it)) }
+            }
+            config.domain.file != null -> {
+                val file = File(config.domain.file)
+                
+                if (!file.exists()) throw InvalidConfigException("Domain file doesn't exist: ${config.domain.file}")
+                
+                file.readLines().let { lines ->
+                    if (lines.isEmpty()) throw InvalidConfigException("Domain file is empty: $config.domainFile")
+                    
+                    repeat(config.domain.repeat) { addAll(lines) }
+                }
+            }
+            else -> throw InvalidConfigException("No domain(s) defined")
         }
-        Thread.sleep(config.delay.inWholeMilliseconds)
     }
+    println("Loaded ${config.runs.size} runs and ${domains.size} domains")
     
-    repeat(3) { println() }
-    
-    val table: List<List<String>> = results.entries.map<Map.Entry<String, List<Int>>, List<String>> { (server, results) ->
-        results.mapTo(mutableListOf(server)) { it.toString() }
-    }.transpose()
-    
-    println(table.joinToString("\n") { it.joinToString(",") })
+    config.runs.forEach { (name, run) ->
+        val results = run.servers.associateWith { mutableListOf<Int>() }
+        val regex = Regex(run.timeRegex)
+        
+        println("Run $name: benchmarking ${run.servers.size} servers")
+        domains.forEach { domain ->
+            print(".")
+            
+            for ((server, result) in results) {
+                val process = runtime.exec(run.command.format(domain, server))
+                val exitCode = process.waitFor()
+                val out = process.inputStream.bufferedReader().readLines()
+                val err = process.errorStream.bufferedReader().readLines()
+                
+                check(exitCode == 0) {
+                    buildString {
+                        appendLine("Command failed: ${run.command.format(domain, server)}")
+                        appendLine("Exit code: $exitCode")
+                        appendOutAndErr(out, err)
+                    }
+                }
+                
+                val line = out.findLast { regex.matches(it) }
+                check(line != null) {
+                    buildString {
+                        appendLine("Command failed: ${run.command.format(domain, server)}")
+                        appendLine("time not found")
+                        appendOutAndErr(out, err)
+                    }
+                }
+                val match = regex.find(line)
+                check(match != null) {
+                    buildString {
+                        appendLine("Command failed: ${run.command.format(domain, server)}")
+                        appendLine("time not found")
+                        appendOutAndErr(out, err)
+                    }
+                }
+                
+                val time = match.groupValues[1].toInt()
+                result.add(time)
+            }
+            Thread.sleep(config.delay.inWholeMilliseconds)
+        }
+        println()
+        
+        val table: List<List<String>> = results.entries.map<Map.Entry<String, List<Int>>, List<String>> { (server, results) ->
+            results.mapTo(mutableListOf("\"" + server + "\"")) { it.toString() }
+        }.transpose()
+        
+        val output = File("dns-benchmark-$timestamp-$name.csv")
+        output.writeText(table.joinToString("\n") { it.joinToString(",") })
+        
+        println("Run $name: done")
+    }
+}
+
+private fun StringBuilder.appendOutAndErr(out: List<String>, err: List<String>) {
+    appendLine("Output:")
+    out.forEach(::appendLine)
+    appendLine()
+    appendLine("Error:")
+    err.forEach(::appendLine)
 }
 
 /**

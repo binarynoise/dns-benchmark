@@ -3,3 +3,6 @@
 /.idea
 /application.conf
 *.iml
+*.csv
+*.ods
+!dns-test.ods

@@ -1,7 +1,6 @@
 @file:OptIn(ExperimentalSerializationApi::class)
 
 import java.io.File
-import kotlin.system.exitProcess
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.serialization.ExperimentalSerializationApi
@@ -17,50 +16,29 @@ private val configRenderOptions = ConfigRenderOptions.defaults().setComments(tru
 
 @Serializable
 data class Config(
-    /**
-     * The list of DNS-Servers to test. IPv4 or IPv6
-     */
-    val servers: List<String>,
-    /**
-     * The domain to query.
-     * Will be formatted with two ints:
-     * a random prefix and the iteration count to generate unique requests
-     */
-    val domain: String,
-    /**
-     * The command to run.
-     * Will be formatted with two strings:
-     * the queried domain and the dns server.
-     * Example: `"drill %s @%s"`
-     */
-    val command: String,
-    /**
-     * The regex used to extract the time
-     */
-    val timeRegex: String,
-    /**
-     * How often each DNS server is queried
-     */
-    val repeat: Int,
-    /**
-     * The time to wait between queries to a server
-     */
+    val domain: DomainConfig,
+    val runs: Map<String, RunConfig>,
     val delay: Duration,
 ) {
     companion object {
+        private val DEFAULT
+            get() = Config(
+                DomainConfig.DEFAULT,
+                mapOf("example" to RunConfig.DEFAULT),
+                1.seconds,
+            )
+        
         fun load(): Config {
             val file = File("application.conf")
-            if (!file.exists()) {
-                file.writeText(Config(emptyList(), "", "", "", 100, 1.seconds).toHocon())
-                printErr("Config not found, created empty: $file")
-                exitProcess(1)
+            check(file.exists()) {
+                file.writeText(Config.DEFAULT.toHocon())
+                "Config not found, created empty: $file"
             }
             try {
-                val config = ConfigFactory.parseFile(file)
+                val config = ConfigFactory.parseFile(file).resolve()
                 return Hocon.decodeFromConfig(config)
             } catch (e: MissingFieldException) {
-                printErr("Config incomplete, please add ${e.missingFields.joinToString()}")
-                exitProcess(1)
+                throw InvalidConfigException("Config incomplete, please add ${e.missingFields.joinToString()}", e)
             }
         }
     }
@@ -70,5 +48,38 @@ data class Config(
     }
 }
 
-fun printErr(msg: Any) = System.err.println(msg)
-fun printErr(msg: String) = System.err.println(msg)
+@Serializable
+data class DomainConfig(
+    val file: String? = null,
+    val fixed: String? = null,
+    val formatted: String? = null,
+    val repeat: Int = 1,
+) {
+    companion object {
+        val DEFAULT
+            get() = DomainConfig(
+                file = "/path/to/domains-file.txt",
+                fixed = "example.com",
+                formatted = "%d%d.example.com",
+                repeat = 1,
+            )
+    }
+}
+
+@Serializable
+data class RunConfig(
+    val command: String,
+    val timeRegex: String,
+    val servers: List<String>,
+) {
+    companion object {
+        val DEFAULT
+            get() = RunConfig(
+                command = "dig %s @%s",
+                timeRegex = ";; Query time: (\\d+) msec",
+                servers = listOf("1.1.1.1"),
+            )
+    }
+}
+
+class InvalidConfigException(message: String, cause: Throwable? = null) : IllegalArgumentException(message, cause)
