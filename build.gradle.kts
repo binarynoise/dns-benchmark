@@ -60,7 +60,6 @@ val shadowJarMinified = tasks.register<JavaExec>("shadowJarMinified") {
     
     mainClass.set("com.android.tools.r8.R8")
     val javaHome = File(ProcessHandle.current().info().command().get()).parentFile.parentFile.canonicalPath
-    
     val args = mutableListOf(
         //"--debug",
         "--classfile",
@@ -76,9 +75,7 @@ val shadowJarMinified = tasks.register<JavaExec>("shadowJarMinified") {
     this.args = args
     
     doFirst {
-        val javaHomeVersion = Runtime.getRuntime().exec("$javaHome/bin/java -version").run {
-            (inputStream.bufferedReader().readText() + errorStream.bufferedReader().readText()).split('"')[1]
-        }
+        val javaHomeVersion = Runtime.version()
         check(JavaVersion.toVersion(javaHomeVersion).isCompatibleWith(javaVersion)) {
             "Incompatible Java Versions: compile-target $javaVersionNumber, r8 runtime $javaHomeVersion (needs to be as new or newer)"
         }
