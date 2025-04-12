@@ -22,7 +22,7 @@ mod dns_server;
 #[tokio::main]
 async fn main() {
     let timestamp = timestamp(SystemTime::now());
-    let config = AppConfig::load().unwrap();
+    let config = AppConfig::load();
 
     println!("{:?}", config);
 
@@ -39,9 +39,12 @@ async fn main() {
         }
     }
     if let Some(file) = config.domain.file {
-        let file = File::open(&file).unwrap();
+        let file = File::open(&file).expect(format!("Failed to open file {}", file).as_str());
         let reader = BufReader::new(file);
-        let lines: Vec<String> = reader.lines().map(|line| line.unwrap()).collect();
+        let lines: Vec<String> = reader
+            .lines()
+            .map(|line| line.expect("Failed to read from file"))
+            .collect();
         for _ in 0..config.domain.repeat {
             domains.extend(lines.clone());
         }
@@ -72,7 +75,7 @@ async fn main() {
     // dot
 
     let system_resolver = Resolver::builder(TokioConnectionProvider::default())
-        .unwrap()
+        .expect("Failed to build the system resolver")
         .build();
     let servers: Vec<DnsServer> = FuturesOrdered::from_iter(
         config
@@ -96,12 +99,12 @@ fn display_results<R: Display>(
     name: &str,
     results: IndexMap<R, Vec<Duration>>,
 ) {
-    std::fs::create_dir_all("results").unwrap();
+    std::fs::create_dir_all("results").expect("Failed to create results directory");
     let filename = format!("results/dns-benchmark-{timestamp}-{name}.csv");
     let mut csv = csv::WriterBuilder::default()
         .quote_style(QuoteStyle::NonNumeric)
         .from_path(&filename)
-        .unwrap();
+        .expect("Failed to create CSV writer");
 
     let headers: Vec<String> = results.keys().map(|x| format!("{x}")).collect();
     csv.write_record(&headers).expect("Failed to write header");

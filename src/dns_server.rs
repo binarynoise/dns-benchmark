@@ -29,11 +29,11 @@ impl DnsServer {
     pub(crate) fn new_dns(ip: String) -> Self {
         let addr: SocketAddr = if ip.contains(":") {
             // V6
-            let ipv6addr = Ipv6Addr::from_str(&ip).unwrap();
+            let ipv6addr = Ipv6Addr::from_str(&ip).expect("Invalid IPv6 address");
             SocketAddr::V6(SocketAddrV6::new(ipv6addr, 53, 0, 0))
         } else {
             // V4
-            let ipv4addr = Ipv4Addr::from_str(&ip).unwrap();
+            let ipv4addr = Ipv4Addr::from_str(&ip).expect("Invalid IPv4 address");
             SocketAddr::V4(SocketAddrV4::new(ipv4addr, 53))
         };
 
@@ -68,7 +68,10 @@ impl DnsServer {
         domain: String,
         system_resolver: &Resolver<TokioConnectionProvider>,
     ) -> Self {
-        let lookup = system_resolver.lookup_ip(&domain).await.unwrap();
+        let lookup = system_resolver
+            .lookup_ip(&domain)
+            .await
+            .expect(format!("Failed to resolve domain name {}", domain).as_str());
 
         let addrs: Vec<SocketAddr> = lookup
             .into_iter()

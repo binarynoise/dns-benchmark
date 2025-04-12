@@ -1,6 +1,5 @@
 use hocon::HoconLoader;
 use serde::Deserialize;
-use std::error::Error;
 use std::path::Path;
 
 #[derive(Debug, Deserialize)]
@@ -43,9 +42,13 @@ pub struct ServerListConfig {
 }
 
 impl AppConfig {
-    pub fn load() -> Result<Self, Box<dyn Error>> {
+    pub fn load() -> Self {
         let config_file = Path::new("config/application.conf");
-        let conf: AppConfig = HoconLoader::new().load_file(config_file)?.resolve()?;
-        Ok(conf)
+        let conf: AppConfig = HoconLoader::new()
+            .load_file(config_file)
+            .expect("Failed to load configuration file")
+            .resolve()
+            .expect("Failed to resolve configuration");
+        conf
     }
 }
