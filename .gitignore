@@ -1,0 +1,6 @@
+/.idea/
+/target
+/config/application.conf
+/config/*.csv
+/results/
+.~lock.*.ods#
