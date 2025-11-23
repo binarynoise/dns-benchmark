@@ -10,6 +10,7 @@ use hickory_resolver::{ResolveError, ResolveErrorKind, Resolver};
 use indexmap::IndexMap;
 use rand::random;
 use sprintf::sprintf;
+use std::borrow::Cow;
 use std::fmt::Display;
 use std::fs::File;
 use std::io;
@@ -20,9 +21,9 @@ mod config;
 mod dns_server;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let timestamp = timestamp(SystemTime::now());
-    let config = AppConfig::load();
+    let config = AppConfig::load().map_err(|err| format!("Could not load config: {err}"))?;
 
     println!("{:?}", config);
 
@@ -35,16 +36,13 @@ async fn main() {
     if let Some(format) = config.domain.format {
         let prefix: u32 = random();
         for i in 0..config.domain.repeat {
-            domains.push(sprintf!(format.as_str(), prefix, i).unwrap());
+            domains.push(sprintf!(format.as_str(), prefix, i)?);
         }
     }
     if let Some(file) = config.domain.file {
-        let file = File::open(&file).expect(format!("Failed to open file {}", file).as_str());
+        let file = File::open(&file).map_err(|err| format!("Could not open file {file}: {err}"))?;
         let reader = BufReader::new(file);
-        let lines: Vec<String> = reader
-            .lines()
-            .map(|line| line.expect("Failed to read from file"))
-            .collect();
+        let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
         for _ in 0..config.domain.repeat {
             domains.extend(lines.clone());
         }
@@ -59,75 +57,81 @@ async fn main() {
 
     // dns
 
-    let servers: Vec<DnsServer> = config
+    let servers: Box<[DnsServer]> = config
         .runs
         .dns
         .servers
         .into_iter()
         .map(DnsServer::new_dns)
-        .collect::<Vec<_>>();
+        .collect::<Result<_, _>>()?;
 
     println!("dns: benchmarking {} servers", servers.len());
-    let results = run_benchmark(&domains, servers).await;
+    let results = run_benchmark(domains.iter(), servers).await;
     println!();
-    display_results(&timestamp, "dns", results);
+    display_results(&timestamp, "dns", results)?;
 
     // dot
 
-    let system_resolver = Resolver::builder(TokioConnectionProvider::default())
-        .expect("Failed to build the system resolver")
-        .build();
-    let servers: Vec<DnsServer> = FuturesOrdered::from_iter(
+    let system_resolver = Resolver::builder(TokioConnectionProvider::default())?.build();
+    let servers: Vec<Result<DnsServer, _>> = FuturesOrdered::from_iter(
         config
             .runs
             .dot
             .servers
             .into_iter()
-            .map(|server| DnsServer::new_dot(server, &system_resolver))
-            .collect::<Vec<_>>(),
+            .map(|server| DnsServer::new_dot(server, &system_resolver)),
     )
     .collect()
     .await;
+
+    if let Some(Err(err)) = servers.iter().find(|res| res.is_err()) {
+        Err(err.clone())?;
+    }
+
     println!("dot: benchmarking {} servers", servers.len());
-    let results = run_benchmark(&domains, servers).await;
+
+    let results = run_benchmark(domains.iter(), servers.into_iter().filter_map(Result::ok)).await;
     println!();
-    display_results(&timestamp, "dot", results);
+
+    display_results(&timestamp, "dot", results)
 }
 
 fn display_results<R: Display>(
-    timestamp: &String,
+    timestamp: &str,
     name: &str,
     results: IndexMap<R, Vec<Duration>>,
-) {
-    std::fs::create_dir_all("results").expect("Failed to create results directory");
+) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::create_dir_all("results")?;
     let filename = format!("results/dns-benchmark-{timestamp}-{name}.csv");
     let mut csv = csv::WriterBuilder::default()
         .quote_style(QuoteStyle::NonNumeric)
-        .from_path(&filename)
-        .expect("Failed to create CSV writer");
+        .from_path(&filename)?;
 
-    let headers: Vec<String> = results.keys().map(|x| format!("{x}")).collect();
-    csv.write_record(&headers).expect("Failed to write header");
+    csv.write_record(results.keys().map(ToString::to_string))
+        .map_err(|err| format!("Failed to write csv header: {err}"))?;
 
     let max_len = results.values().map(|v| v.len()).max().unwrap_or(0);
     for i in 0..max_len {
-        let mut record = Vec::new();
+        let mut record = Vec::<Cow<str>>::new();
         for durations in results.values() {
             if let Some(duration) = durations.get(i) {
-                record.push(format!("{}", duration.as_millis()));
+                record.push(duration.as_millis().to_string().into());
             } else {
-                record.push(String::new());
+                record.push("".into());
             }
         }
-        csv.write_record(&record).expect("Failed to write record");
+        csv.write_record(record.iter().map(|s| s.as_ref()))
+            .map_err(|err| format!("Failed to write csv record: {err}"))?;
     }
 
     println!("Results saved to {}", filename);
+
+    Ok(())
 }
 
 async fn run_benchmark(
-    domains: &Vec<String>,
-    servers: Vec<DnsServer>,
+    domains: impl Iterator<Item = &String>,
+    servers: impl IntoIterator<Item = DnsServer>,
 ) -> IndexMap<DnsServer, Vec<Duration>> {
     let mut results: IndexMap<DnsServer, Vec<Duration>> = servers
         .into_iter()
@@ -136,9 +140,9 @@ async fn run_benchmark(
 
     for domain in domains {
         for (server, result) in results.iter_mut() {
-            let (r, time) = measure_time_async(async || server.resolve4(domain).await).await;
+            let (r, time) = measure_time_async(|| server.resolve4(domain)).await;
             process_result(server, result, r, time);
-            let (r, time) = measure_time_async(async || server.resolve6(domain).await).await;
+            let (r, time) = measure_time_async(|| server.resolve6(domain)).await;
             process_result(server, result, r, time);
         }
         print!(".");
@@ -183,11 +187,11 @@ where
     let start = SystemTime::now();
     let r = f().await;
     let end = SystemTime::now();
-    let duration = end.duration_since(start).unwrap();
+    let duration = end.duration_since(start).expect("time should go forward");
     (r, duration)
 }
 
 fn timestamp(st: SystemTime) -> String {
     let dt: DateTime<Utc> = st.into();
-    format!("{}", dt.format("%Y-%m-%d_%H:%M:%S"))
+    dt.format("%Y-%m-%d_%H:%M:%S").to_string()
 }

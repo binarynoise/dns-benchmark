@@ -1,5 +1,6 @@
 use hocon::HoconLoader;
 use serde::Deserialize;
+use std::error::Error;
 use std::path::Path;
 
 #[derive(Debug, Deserialize)]
@@ -23,7 +24,7 @@ pub struct DomainConfig {
 }
 
 impl DomainConfig {
-    fn default_repeat() -> u8 {
+    const fn default_repeat() -> u8 {
         1
     }
 }
@@ -42,13 +43,13 @@ pub struct ServerListConfig {
 }
 
 impl AppConfig {
-    pub fn load() -> Self {
+    pub fn load() -> Result<Self, Box<dyn Error>> {
         let config_file = Path::new("config/application.conf");
-        let conf: AppConfig = HoconLoader::new()
-            .load_file(config_file)
-            .expect("Failed to load configuration file")
-            .resolve()
-            .expect("Failed to resolve configuration");
-        conf
+        if !config_file.exists() {
+            Err(format!("{} does not exist", config_file.display()))?
+        } else {
+            let conf: AppConfig = HoconLoader::new().load_file(config_file)?.resolve()?;
+            Ok(conf)
+        }
     }
 }

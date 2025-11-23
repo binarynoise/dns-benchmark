@@ -19,7 +19,6 @@ tokio = { version = "1.0.0", features = ["rt", "rt-multi-thread", "macros"] }
 
 [profile.release]
 strip = true
-lto = true
-codegen-units = 1
+lto = "thin"
 opt-level = 3
 panic = "abort"

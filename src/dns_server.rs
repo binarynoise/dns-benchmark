@@ -8,11 +8,11 @@ use hickory_resolver::name_server::TokioConnectionProvider;
 use hickory_resolver::proto::xfer::Protocol;
 use hickory_resolver::{ResolveError, Resolver, TokioResolver};
 use std::fmt::{Display, Formatter};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::net::{AddrParseError, IpAddr, SocketAddr};
 use std::str::FromStr;
 use std::time::Duration;
 
-#[derive(Derivative)]
+#[derive(Derivative, Debug)]
 #[derivative(PartialEq, Eq, Hash)]
 pub(crate) struct DnsServer {
     name: String,
@@ -26,16 +26,8 @@ pub(crate) struct DnsServer {
 }
 
 impl DnsServer {
-    pub(crate) fn new_dns(ip: String) -> Self {
-        let addr: SocketAddr = if ip.contains(":") {
-            // V6
-            let ipv6addr = Ipv6Addr::from_str(&ip).expect("Invalid IPv6 address");
-            SocketAddr::V6(SocketAddrV6::new(ipv6addr, 53, 0, 0))
-        } else {
-            // V4
-            let ipv4addr = Ipv4Addr::from_str(&ip).expect("Invalid IPv4 address");
-            SocketAddr::V4(SocketAddrV4::new(ipv4addr, 53))
-        };
+    pub(crate) fn new_dns(ip: String) -> Result<Self, AddrParseError> {
+        let addr: SocketAddr = SocketAddr::new(IpAddr::from_str(&ip)?, 53);
 
         let mut resolver_config = ResolverConfig::new();
         resolver_config.add_name_server(NameServerConfig::new(addr, Protocol::Udp));
@@ -55,11 +47,11 @@ impl DnsServer {
 
         let resolver6 = builder6.build();
 
-        DnsServer {
+        Ok(DnsServer {
             name: ip,
             resolver4,
             resolver6,
-        }
+        })
     }
 }
 
@@ -67,18 +59,12 @@ impl DnsServer {
     pub(crate) async fn new_dot(
         domain: String,
         system_resolver: &Resolver<TokioConnectionProvider>,
-    ) -> Self {
-        let lookup = system_resolver
-            .lookup_ip(&domain)
-            .await
-            .expect(format!("Failed to resolve domain name {}", domain).as_str());
+    ) -> Result<Self, ResolveError> {
+        let lookup = system_resolver.lookup_ip(&domain).await?;
 
         let addrs: Vec<SocketAddr> = lookup
             .into_iter()
-            .map(|a| match a {
-                IpAddr::V4(v4) => SocketAddr::V4(SocketAddrV4::new(v4, 853)),
-                IpAddr::V6(v6) => SocketAddr::V6(SocketAddrV6::new(v6, 853, 0, 0)),
-            })
+            .map(|ip| SocketAddr::new(ip, 853))
             .collect();
 
         assert!(!addrs.is_empty());
@@ -106,18 +92,18 @@ impl DnsServer {
 
         let resolver6 = builder6.build();
 
-        DnsServer {
+        Ok(DnsServer {
             name: domain,
             resolver4,
             resolver6,
-        }
+        })
     }
 
-    pub(crate) async fn resolve4(&self, domain: &String) -> Result<LookupIp, ResolveError> {
+    pub(crate) async fn resolve4(&self, domain: &str) -> Result<LookupIp, ResolveError> {
         self.resolver4.lookup_ip(domain).await
     }
 
-    pub(crate) async fn resolve6(&self, domain: &String) -> Result<LookupIp, ResolveError> {
+    pub(crate) async fn resolve6(&self, domain: &str) -> Result<LookupIp, ResolveError> {
         self.resolver6.lookup_ip(domain).await
     }
 }
