@@ -6,7 +6,7 @@ use std::path::Path;
 #[derive(Debug, Deserialize)]
 pub struct AppConfig {
     pub domain: DomainConfig,
-    pub runs: RunConfig,
+    pub groups: Vec<GroupConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -30,16 +30,14 @@ impl DomainConfig {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct RunConfig {
-    #[serde(alias = "DNS")]
-    pub dns: ServerListConfig,
-    #[serde(alias = "DoT")]
-    pub dot: ServerListConfig,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ServerListConfig {
-    pub servers: Vec<String>,
+pub struct GroupConfig {
+    pub name: String,
+    #[serde(default)]
+    pub ip4: Vec<String>,
+    #[serde(default)]
+    pub ip6: Vec<String>,
+    #[serde(default, alias = "DoT")]
+    pub dot: Vec<String>,
 }
 
 impl AppConfig {

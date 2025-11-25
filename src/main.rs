@@ -2,20 +2,22 @@ use crate::config::AppConfig;
 use crate::dns_server::DnsServer;
 use chrono::prelude::{DateTime, Utc};
 use csv::QuoteStyle;
-use futures::stream::FuturesOrdered;
-use futures::StreamExt;
 use hickory_resolver::name_server::TokioConnectionProvider;
 use hickory_resolver::proto::ProtoErrorKind;
 use hickory_resolver::{ResolveError, ResolveErrorKind, Resolver};
 use indexmap::IndexMap;
 use rand::random;
+use rand::seq::SliceRandom;
 use sprintf::sprintf;
 use std::borrow::Cow;
+use std::cmp::min;
 use std::fmt::Display;
 use std::fs::File;
 use std::io;
 use std::io::{BufRead, BufReader, Write};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
+use std::future::Future;
 
 mod config;
 mod dns_server;
@@ -39,10 +41,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             domains.push(sprintf!(format.as_str(), prefix, i)?);
         }
     }
+    let mut rng = rand::rng();
     if let Some(file) = config.domain.file {
         let file = File::open(&file).map_err(|err| format!("Could not open file {file}: {err}"))?;
         let reader = BufReader::new(file);
-        let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
+        let mut lines: Vec<String> = reader.lines().skip(1).collect::<Result<_, _>>()?;
+        lines.shuffle(&mut rng);
         for _ in 0..config.domain.repeat {
             domains.extend(lines.clone());
         }
@@ -52,57 +56,88 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             domain.push('.');
         }
     }
+    let domains = domains; // make readonly
+
     println!("Loaded {} domains", domains.len());
     assert!(!domains.is_empty());
 
-    // dns
-
-    let servers: Box<[DnsServer]> = config
-        .runs
-        .dns
-        .servers
-        .into_iter()
-        .map(DnsServer::new_dns)
-        .collect::<Result<_, _>>()?;
-
-    println!("dns: benchmarking {} servers", servers.len());
-    let results = run_benchmark(domains.iter(), servers).await;
-    println!();
-    display_results(&timestamp, "dns", results)?;
-
-    // dot
-
     let system_resolver = Resolver::builder(TokioConnectionProvider::default())?.build();
-    let servers: Vec<Result<DnsServer, _>> = FuturesOrdered::from_iter(
-        config
-            .runs
-            .dot
-            .servers
-            .into_iter()
-            .map(|server| DnsServer::new_dot(server, &system_resolver)),
-    )
-    .collect()
-    .await;
 
-    if let Some(Err(err)) = servers.iter().find(|res| res.is_err()) {
-        Err(err.clone())?;
+    let mut results: IndexMap<DnsServer, (Vec<Duration>, Vec<String>)> = IndexMap::new();
+
+    for group in config.groups {
+        let mut servers: Vec<DnsServer> = Vec::new();
+        servers.append(
+            &mut group
+                .ip4
+                .into_iter()
+                .map(DnsServer::new_dns)
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+        servers.append(
+            &mut group
+                .ip6
+                .into_iter()
+                .map(DnsServer::new_dns)
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+        servers.append(
+            &mut futures::future::try_join_all(
+                group
+                    .dot
+                    .into_iter()
+                    .map(|server| DnsServer::new_dot(server, &system_resolver)),
+            )
+            .await?,
+        );
+        let servers = servers;
+
+        let count = servers.len();
+
+        if count == 0 {
+            continue;
+        };
+
+        let chunk_size = min(100, domains.len() / count);
+        println!(
+            "benchmarking {} servers -> {}/chunk: {}",
+            count, chunk_size, group.name
+        );
+
+        let mut domain_chunks = domains.chunks(chunk_size);
+
+        for dns_server in servers {
+            let domain_chunk: Vec<String> = domain_chunks.next().unwrap().into();
+
+            results
+                .entry(dns_server)
+                .insert_entry((Vec::<Duration>::new(), domain_chunk));
+        }
     }
 
-    println!("dot: benchmarking {} servers", servers.len());
+    println!("run benchmark");
 
-    let results = run_benchmark(domains.iter(), servers.into_iter().filter_map(Result::ok)).await;
-    println!();
+    for (server, (durations, server_domains)) in &mut results {
+        for domain in server_domains {
+            let (r, time) = measure_time_async(|| server.resolve4(&domain)).await;
+            process_result(&server, durations, r, time);
+            let (r, time) = measure_time_async(|| server.resolve6(&domain)).await;
+            process_result(&server, durations, r, time);
+        }
 
-    display_results(&timestamp, "dot", results)
-}
+        print!(".");
+        io::stdout().flush().unwrap();
+    }
 
-fn display_results<R: Display>(
-    timestamp: &str,
-    name: &str,
-    results: IndexMap<R, Vec<Duration>>,
-) -> Result<(), Box<dyn std::error::Error>> {
+    let results = results
+        .into_iter()
+        .map(|(server, (durations, _))| (server, durations))
+        .collect::<IndexMap<_, _>>();
+
+    println!("save results");
+
     std::fs::create_dir_all("results")?;
-    let filename = format!("results/dns-benchmark-{timestamp}-{name}.csv");
+    let filename = format!("results/dns-benchmark-{timestamp}.csv");
     let mut csv = csv::WriterBuilder::default()
         .quote_style(QuoteStyle::NonNumeric)
         .from_path(&filename)?;
@@ -125,30 +160,7 @@ fn display_results<R: Display>(
     }
 
     println!("Results saved to {}", filename);
-
     Ok(())
-}
-
-async fn run_benchmark(
-    domains: impl Iterator<Item = &String>,
-    servers: impl IntoIterator<Item = DnsServer>,
-) -> IndexMap<DnsServer, Vec<Duration>> {
-    let mut results: IndexMap<DnsServer, Vec<Duration>> = servers
-        .into_iter()
-        .map(|dns_server| (dns_server, Vec::<Duration>::new()))
-        .collect();
-
-    for domain in domains {
-        for (server, result) in results.iter_mut() {
-            let (r, time) = measure_time_async(|| server.resolve4(domain)).await;
-            process_result(server, result, r, time);
-            let (r, time) = measure_time_async(|| server.resolve6(domain)).await;
-            process_result(server, result, r, time);
-        }
-        print!(".");
-        io::stdout().flush().unwrap();
-    }
-    results
 }
 
 fn process_result<S: Display, R>(

@@ -53,9 +53,7 @@ impl DnsServer {
             resolver6,
         })
     }
-}
 
-impl DnsServer {
     pub(crate) async fn new_dot(
         domain: String,
         system_resolver: &Resolver<TokioConnectionProvider>,
