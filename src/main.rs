@@ -2,22 +2,22 @@ use crate::config::AppConfig;
 use crate::dns_server::DnsServer;
 use chrono::prelude::{DateTime, Utc};
 use csv::QuoteStyle;
+use futures::stream::{FuturesUnordered, StreamExt};
 use hickory_resolver::name_server::TokioConnectionProvider;
 use hickory_resolver::proto::ProtoErrorKind;
 use hickory_resolver::{ResolveError, ResolveErrorKind, Resolver};
 use indexmap::IndexMap;
-use rand::random;
 use rand::seq::SliceRandom;
+use rand::{random, Rng};
 use sprintf::sprintf;
 use std::borrow::Cow;
 use std::cmp::min;
 use std::fmt::Display;
 use std::fs::File;
+use std::future::Future;
 use std::io;
 use std::io::{BufRead, BufReader, Write};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
-use std::future::Future;
 
 mod config;
 mod dns_server;
@@ -117,17 +117,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("run benchmark");
 
-    for (server, (durations, server_domains)) in &mut results {
-        for domain in server_domains {
-            let (r, time) = measure_time_async(|| server.resolve4(&domain)).await;
-            process_result(&server, durations, r, time);
-            let (r, time) = measure_time_async(|| server.resolve6(&domain)).await;
-            process_result(&server, durations, r, time);
-        }
+    let server_futures =
+        results
+            .iter_mut()
+            .map(|(server, (durations, server_domains))| async move {
+                let mut rng = rand::rng();
 
-        print!(".");
+                for domain in server_domains {
+                    let (r, time) = measure_time_async(|| server.resolve4(domain)).await;
+                    process_result(&server, durations, r, time);
+
+                    let (r, time) = measure_time_async(|| server.resolve6(domain)).await;
+                    process_result(&server, durations, r, time);
+
+                    tokio::time::sleep(Duration::from_millis(rng.random_range(10..30))).await;
+
+                    print!(".");
+                    io::stdout().flush().unwrap();
+                }
+            });
+
+    let mut stream = FuturesUnordered::from_iter(server_futures);
+    while stream.next().await.is_some() {
+        print!("|");
         io::stdout().flush().unwrap();
     }
+    drop(stream);
+
+    println!();
 
     let results = results
         .into_iter()
