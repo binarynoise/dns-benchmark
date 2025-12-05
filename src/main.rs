@@ -45,10 +45,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(file) = config.domain.file {
         let file = File::open(&file).map_err(|err| format!("Could not open file {file}: {err}"))?;
         let reader = BufReader::new(file);
-        let mut lines: Vec<String> = reader.lines().skip(1).collect::<Result<_, _>>()?;
-        lines.shuffle(&mut rng);
+        let lines: Vec<String> = reader.lines().skip(1).collect::<Result<_, _>>()?;
         for _ in 0..config.domain.repeat {
-            domains.extend(lines.clone());
+            domains = lines.clone();
+            domains.shuffle(&mut rng);
         }
     }
     for domain in &mut domains {
@@ -98,7 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         };
 
-        let chunk_size = min(100, domains.len() / count);
+        let chunk_size = min(1000, domains.len() / count);
         println!(
             "benchmarking {} servers -> {}/chunk: {}",
             count, chunk_size, group.name
@@ -107,7 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut domain_chunks = domains.chunks(chunk_size);
 
         for dns_server in servers {
-            let domain_chunk: Vec<String> = domain_chunks.next().unwrap().into();
+            let domain_chunk: Vec<String> = domain_chunks.next().ok_or("Not enough domains")?.into();
 
             results
                 .entry(dns_server)
@@ -122,6 +122,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .iter_mut()
             .map(|(server, (durations, server_domains))| async move {
                 let mut rng = rand::rng();
+                tokio::time::sleep(Duration::from_millis(rng.random_range(0..5000))).await;
 
                 for domain in server_domains {
                     let (r, time) = measure_time_async(|| server.resolve4(domain)).await;
