@@ -46,8 +46,12 @@ impl AppConfig {
         if !config_file.exists() {
             Err(format!("{} does not exist", config_file.display()))?
         } else {
-            let conf: AppConfig = HoconLoader::new().load_file(config_file)?.resolve()?;
-            Ok(conf)
+            let config: AppConfig = HoconLoader::new().load_file(config_file)?.resolve()?;
+
+            #[cfg(debug_assertions)]
+            println!("{:?}", config);
+
+            Ok(config)
         }
     }
 }
